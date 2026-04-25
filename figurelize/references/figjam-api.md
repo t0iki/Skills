@@ -11,21 +11,75 @@
 ## 基本テンプレート
 
 ```js
-// 必要なフォントを先にロード
+// 1) 描画先ページに切り替え
+const page = await figma.getNodeByIdAsync("<pageId>");
+await figma.setCurrentPageAsync(page);
+
+// 2) フォントを先にロード
 await figma.loadFontAsync({ family: "Inter", style: "Medium" });
 
-const created = [];
+// 3) アンカー決定（既存 bbox の右側 +400px）
+const items = figma.currentPage.children
+  .map(n => ({ x1: n.x, y1: n.y, x2: n.x + (n.width ?? 0), y2: n.y + (n.height ?? 0), w: n.width ?? 0, h: n.height ?? 0 }))
+  .filter(it => it.w > 0 && it.h > 0);
+let aX = 0, aY = 0;
+if (items.length > 0) {
+  const maxX = Math.max(...items.map(i => i.x2));
+  const minY = Math.min(...items.map(i => i.y1));
+  const maxY = Math.max(...items.map(i => i.y2));
+  aX = maxX + 400;
+  aY = (minY + maxY) / 2;
+}
 
-// === ここでノードを作る ===
+// 4) Section
+const section = figma.createSection();
+section.name = "figurelize: <topic>（<style>）";
+
+// 5) 各ノードを Sticky/ShapeWithText/Connector で作り、絶対座標は anchor 起点で計算
+const created = [];
+// ... ここで created に push し、各 node を section.appendChild(node) する ...
+
+// 6) Section を中身にフィットさせる（後述のヘルパー）
+fitSectionToChildren(section, 80);
 
 return {
+  pageId: page.id,
+  sectionId: section.id,
+  anchor: { x: aX, y: aY },
   createdNodeIds: created.map(n => n.id),
   mutatedNodeIds: [],
-  labels: {
-    "ラベル": created[0].id
-  }
+  labels: { "ラベル": created[0].id }
 };
+
+// === ヘルパー: Section を子の world bbox に合わせる（詳細は下の Section セクション）===
+function fitSectionToChildren(section, margin = 80) {
+  const ch = section.children;
+  if (ch.length === 0) return;
+  const valid = ch.map(c => c.absoluteBoundingBox).filter(Boolean);
+  const wMinX = Math.min(...valid.map(b => b.x));
+  const wMinY = Math.min(...valid.map(b => b.y));
+  const wMaxX = Math.max(...valid.map(b => b.x + b.width));
+  const wMaxY = Math.max(...valid.map(b => b.y + b.height));
+  const newX = wMinX - margin;
+  const newY = wMinY - margin;
+  const dx = newX - section.x;
+  const dy = newY - section.y;
+  for (const c of ch) {
+    if (c.type === 'CONNECTOR') continue;
+    c.x -= dx; c.y -= dy;
+  }
+  section.x = newX;
+  section.y = newY;
+  section.resizeWithoutConstraints((wMaxX - wMinX) + margin * 2, (wMaxY - wMinY) + margin * 2);
+}
 ```
+
+---
+
+## ページ切替とページ作成不可
+
+- ページ切替: `await figma.setCurrentPageAsync(page)` のみ（同期版は throw）
+- **`figma.createPage()` は FigJam では未対応**。新規ページが必要ならユーザーに作ってもらい、URL の `node-id=A-B` でその `A:B` を渡してもらう
 
 ---
 
@@ -124,6 +178,108 @@ figma.currentPage.appendChild(code);
 ```
 
 `codeLanguage` の例: `JAVASCRIPT`, `TYPESCRIPT`, `PYTHON`, `GO`, `RUST`, `JSON`, `BASH`, `SQL`, `CPP`, `CSS`, `HTML` など。
+
+---
+
+## Section（必ず使う）
+
+描画したノード群は必ず Section に格納する。**Section は中身を完全に覆うようにフィットさせる**。
+
+### 重要な落とし穴
+
+`section.appendChild(node)` すると、子の `x, y` は **section ローカル座標** になる。
+さらに `section.x` を変更すると **中身も一緒に world 上を動く**。
+
+つまり以下を順にやる必要がある:
+
+1. 子の **world bbox**（`absoluteBoundingBox`）を集計
+2. Section の新しい world 位置/サイズを決定
+3. Section を移動するときに発生する子のずれを **逆方向に補正** する
+4. Section をリサイズ
+
+### フィット用ヘルパー
+
+```js
+function fitSectionToChildren(section, margin = 80) {
+  const ch = section.children;
+  if (ch.length === 0) return;
+
+  // 1) 子の world bbox（CONNECTOR も含めて OK）
+  const valid = ch.map(c => c.absoluteBoundingBox).filter(Boolean);
+  const wMinX = Math.min(...valid.map(b => b.x));
+  const wMinY = Math.min(...valid.map(b => b.y));
+  const wMaxX = Math.max(...valid.map(b => b.x + b.width));
+  const wMaxY = Math.max(...valid.map(b => b.y + b.height));
+
+  // 2) Section 新 world 位置
+  const newX = wMinX - margin;
+  const newY = wMinY - margin;
+  const newW = (wMaxX - wMinX) + margin * 2;
+  const newH = (wMaxY - wMinY) + margin * 2;
+
+  // 3) Section が dx,dy 動くと中身も動くので、非コネクタの子を逆方向に補正
+  const dx = newX - section.x;
+  const dy = newY - section.y;
+  for (const c of ch) {
+    if (c.type === 'CONNECTOR') continue; // コネクタは端点追従なので触らない
+    c.x = c.x - dx;
+    c.y = c.y - dy;
+  }
+
+  // 4) Section を移動・リサイズ
+  section.x = newX;
+  section.y = newY;
+  section.resizeWithoutConstraints(newW, newH);
+}
+```
+
+### 使い方
+
+```js
+const section = figma.createSection();
+section.name = "figurelize: <topic>（<style>）";
+
+// ...Sticky/ShapeWithText/Connector を作成し、section.appendChild(node) ...
+
+fitSectionToChildren(section, 80);
+```
+
+### 座標系の落とし穴 ★
+
+`section.appendChild(node)` の **後** は `node.x/y` は **section ローカル座標** として
+解釈される。「世界座標 (wx, wy) に置きたい」場合は次のヘルパを使う:
+
+```js
+function placeWorld(node, section, wx, wy) {
+  section.appendChild(node);
+  node.x = wx - section.x;  // ローカル = world - section.world
+  node.y = wy - section.y;
+}
+```
+
+**よくあるバグ**:
+
+```js
+// ✗ NG: appendChild 前に world 座標で x/y を設定し、その後 appendChild
+node.x = wx; node.y = wy;
+section.appendChild(node); // この時点で x/y は section ローカルに「再解釈」されて
+                           // world 位置がずれる
+```
+
+正しくは **必ず appendChild → x/y セット** の順。
+
+### 検証
+
+フィット後、`section.absoluteBoundingBox` が全子要素の world bbox を完全に覆っているか
+次の式で確認できる:
+
+```js
+const fAbb = section.absoluteBoundingBox;
+const inside = section.children
+  .map(c => c.absoluteBoundingBox)
+  .filter(Boolean)
+  .every(b => b.x >= fAbb.x && b.y >= fAbb.y && b.x + b.width <= fAbb.x + fAbb.width && b.y + b.height <= fAbb.y + fAbb.height);
+```
 
 ---
 
