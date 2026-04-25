@@ -1,6 +1,7 @@
 # Skills
 
 Claude Code 用のカスタムスキル集。
+各スキルは [agentskills.io spec](https://agentskills.io/specification) に準拠した SKILL.md を持つ。
 
 ## 収録スキル
 
@@ -15,21 +16,55 @@ Claude Code 用のカスタムスキル集。
 
 ## インストール
 
-スキルとして使うには、`~/.claude/skills/` にシンボリックリンクを張る。
+[`gh skill`](https://dev.classmethod.jp/articles/gh-skill-agent-skills-management/) コマンドを使う。**GitHub CLI v2.90.0+** が必要。
+
+### 1. gh のバージョンを確認・アップグレード
 
 ```sh
-ln -s "$PWD/figurelize" ~/.claude/skills/figurelize
+gh --version              # v2.90.0+ であること
+brew upgrade gh           # 古ければアップグレード
 ```
 
-確認:
+### 2. スキルをインストール
+
+ユーザースコープ（全プロジェクトで使える）:
 
 ```sh
-ls -la ~/.claude/skills/figurelize
+gh skill install t0iki/Skills figurelize --agent claude-code --scope user
 ```
 
-Claude Code を再起動すると `/figurelize` が使えるようになる。
+プロジェクトスコープ（このプロジェクトでのみ使う）:
+
+```sh
+gh skill install t0iki/Skills figurelize --agent claude-code --scope project
+```
+
+### 3. 更新
+
+```sh
+gh skill update
+```
+
+### 4. SKILL.md を事前に確認
+
+```sh
+gh skill preview t0iki/Skills figurelize
+```
 
 ## 開発メモ
 
 - 各スキルは独立したディレクトリ（`figurelize/` など）
-- 各ディレクトリには `SKILL.md`（本体）と必要に応じた補助ファイル
+- ディレクトリ構成は agentskills 仕様準拠:
+  ```
+  <skill-name>/
+  ├── SKILL.md          # 本体（frontmatter + instructions）
+  ├── references/       # 必要時ロードする補助ドキュメント
+  ├── scripts/          # （任意）実行コード
+  └── assets/           # （任意）テンプレ・リソース
+  ```
+- frontmatter の必須フィールド: `name`, `description`
+- 推奨フィールド: `license`, `compatibility`, `metadata`
+
+## ライセンス
+
+[MIT](./LICENSE)
